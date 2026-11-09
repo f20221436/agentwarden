@@ -1,0 +1,23 @@
+services:
+  mongodb:
+    # Atlas Local bundles mongod + mongot (Search / Vector Search) — see docs/PROJECT_PLAN.md §4.1.
+    image: mongodb/mongodb-atlas-local:8.0
+    container_name: agentwarden-mongo
+    ports:
+      - "127.0.0.1:27017:27017"   # localhost only (THREAT_MODEL T11)
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: ${AW_MONGO_USER:-agentwarden}
+      MONGODB_INITDB_ROOT_PASSWORD: ${AW_MONGO_PASSWORD:?Set AW_MONGO_PASSWORD in .env}
+    volumes:
+      - aw-mongo-data:/data/db
+      - aw-mongo-config:/data/configdb
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/runner", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
+volumes:
+  aw-mongo-data:
+  aw-mongo-config:

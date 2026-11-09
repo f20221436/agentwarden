@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
+.env
+# generated scenario artefacts (reproducible from the seeded generator)
+scenarios/*/data/
+# raw eval JSON is committed deliberately (evidence for RESULTS.md); scratch runs are not
+evals/results/scratch/
