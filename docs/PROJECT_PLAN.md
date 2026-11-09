@@ -1,7 +1,7 @@
 # AgentWarden — Project Plan
 
 > A reliable, secure, observable and measured runtime for agentic AI systems.
-> Status: **Plan — awaiting validation (checkpoint 1 of 2 for Milestone 1).**
+> Status: **Milestone 1 implementation (plan approved 2026-11-10).**
 > Last updated: 2026-11-09
 
 ---
@@ -403,8 +403,11 @@ approval flow, OpenTelemetry, 100+ tasks, model comparison, full-stack compose, 
 | D11 | **Shadow-mode policy when guardrails OFF** | Fully disabled | Comparable attempt counts across ON vs OFF | Slight overhead |
 | D12 | argparse CLI, stdlib logging (JSON formatter), PyYAML tasks | Typer, structlog | Fewer dependencies | Less ergonomic |
 | D13 | No Redis | — | Single process, in-memory token buckets suffice | Rate limits don't span processes (M1 is single process) |
+| D14 | **Benchmark model: `qwen2.5:3b`** (Ollama, CPU) | `qwen3:4b`; larger 7B models; cloud | Measured with `agentwarden probe` (10 prompts, first turn): qwen2.5:3b 9/10 correct tool + valid args, mean 3.9 s/call; qwen3:4b 9/10 but mean 61.8 s/call (370–910 output tokens per call even with `think=false`) and one 300 s timeout. qwen3:4b would make one 30-task run take > 1 h | A 3B model is weak at multi-step SQL; absolute completion rates are low, but the *runtime* comparisons (guardrails, reliability) are what M1 measures. Cloud comparison remains available with approval |
 
 ---
 
 ## 11. Test status
-No code yet: 0 tests. This section is updated from real `pytest` runs only.
+From real runs only. 2026-11-10: **126 passed, 0 failed** (`pytest -q`, includes Mongo integration tests
+against the local container); line coverage **74%** (`pytest --cov=agentwarden`). Uncovered: eval runner and
+provider HTTP paths (exercised by live eval runs, not unit tests). Lint: `ruff check` clean.
