@@ -403,11 +403,17 @@ approval flow, OpenTelemetry, 100+ tasks, model comparison, full-stack compose, 
 | D11 | **Shadow-mode policy when guardrails OFF** | Fully disabled | Comparable attempt counts across ON vs OFF | Slight overhead |
 | D12 | argparse CLI, stdlib logging (JSON formatter), PyYAML tasks | Typer, structlog | Fewer dependencies | Less ergonomic |
 | D13 | No Redis | — | Single process, in-memory token buckets suffice | Rate limits don't span processes (M1 is single process) |
+| D15 | **Cloud comparison via Groq** through the existing OpenAI-compatible adapter | Native SDKs; other providers | No new code path: the same adapter, opt-in via `AW_ALLOW_CLOUD=1`; provider name derived from the base URL so runs are labelled `groq` | Free/dev tiers are rate-limited (RPM/TPM/TPD); latency includes `Retry-After` waits |
+| D16 | **429 handling: honour `Retry-After` / `x-ratelimit-reset-*`, cap 65 s; daily quota → abort the eval run** | Plain backoff; unlimited waiting | Never retry sooner than the server asks (retrying early just burns quota); a wait beyond the cap or a "per day" message cannot succeed within one task, so the run is stored `aborted` rather than polluting results with infrastructure failures | A run interrupted by quota must be re-run later |
+| D17 | **Separate `tool_retries` and `model_retries`; reliability OFF disables only tool retries + loop detection** | One shared retry policy (M1 v1) | Faults are injected into tools; turning off model retries too would let provider 429s confound the comparison | Reliability OFF is "tool reliability off", stated in README/RESULTS |
+| D18 | **Explicit denial messages** ("NOT executed, nothing was changed, never describe it as completed") | Terse "DENIED" | Measured: with the terse message the model claimed "after deleting all churned users, 4947 remain" (adv_06) | Longer tool messages (more tokens) |
+| D19 | **Price table `agentwarden/pricing.yaml` with `source` + `verified` per entry** | Hard-coded prices; no cost | Cost is a required metric; provenance must be visible because the official Groq page could not be fetched | Prices go stale; each run stores the price snapshot it used |
 | D14 | **Benchmark model: `qwen2.5:3b`** (Ollama, CPU) | `qwen3:4b`; larger 7B models; cloud | Measured with `agentwarden probe` (10 prompts, first turn): qwen2.5:3b 9/10 correct tool + valid args, mean 3.9 s/call; qwen3:4b 9/10 but mean 61.8 s/call (370–910 output tokens per call even with `think=false`) and one 300 s timeout. qwen3:4b would make one 30-task run take > 1 h | A 3B model is weak at multi-step SQL; absolute completion rates are low, but the *runtime* comparisons (guardrails, reliability) are what M1 measures. Cloud comparison remains available with approval |
 
 ---
 
 ## 11. Test status
-From real runs only. 2026-11-10: **126 passed, 0 failed** (`pytest -q`, includes Mongo integration tests
-against the local container); line coverage **74%** (`pytest --cov=agentwarden`). Uncovered: eval runner and
-provider HTTP paths (exercised by live eval runs, not unit tests). Lint: `ruff check` clean.
+From real runs only. 2026-11-10 (commit `cb73549`): **145 passed, 0 failed** (`pytest -q`, includes Mongo
+integration tests against the local container); line coverage **82%** (`pytest --cov=agentwarden`).
+Cloud 429/Retry-After handling is tested with a mocked HTTP transport (no network, no key). Mostly uncovered:
+Ollama HTTP path, `probe.py`, CLI glue (exercised by live runs). Lint: `ruff check` clean.

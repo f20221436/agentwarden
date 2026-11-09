@@ -153,6 +153,27 @@ out again; retrying wastes the deadline. A dropped connection is transient; a sl
 
 ---
 
+## Layer 6b: Cloud provider, rate limits and cost
+
+**Built.** Groq through the OpenAI-compatible adapter; `parse_retry_after` (`Retry-After` seconds or HTTP
+date, then `x-ratelimit-reset-requests/tokens` like `2m59.56s`); `ProviderError.retry_after_s` /
+`quota_exhausted`; retry loop that waits `max(backoff, server_wait)` and fails fast above a 65 s cap; eval runs
+that abort on quota; `agentwarden/pricing.yaml` with provenance; split `tool_retries` / `model_retries`.
+
+**Concepts.** A 429 is a *request from the server*, not just an error: retrying sooner wastes quota and can
+extend a ban. Per-minute limits (RPM/TPM) are transient; per-day limits (RPD/TPD) are not transient within a
+task. Separating infrastructure failures from agent failures keeps benchmark numbers honest.
+Configuration hygiene: when comparing "reliability ON vs OFF", only toggle the mechanism under test.
+
+**Test.** `pytest tests/test_cloud_and_pricing.py -q` (mocked HTTP; no key needed).
+
+**Interview questions**
+1. *Why not just use exponential backoff for 429s?* The server knows when capacity returns; `Retry-After` is
+   more accurate than a guess, and retrying early consumes quota. Backoff is the fallback when no header exists.
+2. *Why abort the whole eval run on daily-quota exhaustion?* Every remaining task would fail for an
+   infrastructure reason and drag the completion rate down; that would measure the account, not the agent.
+3. *Why are unknown prices `n/a` and not $0?* $0 would be a fabricated number that makes a model look free.
+
 ## Layer 7: Evaluation engine
 
 **Built.** Task schema + loader, deterministic checks (`evals/checks.py`), runner with presets
