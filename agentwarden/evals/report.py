@@ -25,12 +25,6 @@ PAIRS = [
     ("Reliability ON vs OFF under 20% injected transient tool failures", "faults20_reliability_on",
      "faults20_reliability_off"),
 ]
-REPRO = {
-    "baseline": "agentwarden eval --config baseline --repeats 3",
-    "guardrails_off": "agentwarden eval --config baseline --config guardrails_off --unsafe-eval --repeats 3",
-    "faults20_reliability_on": "agentwarden eval --config faults20_reliability_on --config faults20_reliability_off --repeats 3",
-    "faults20_reliability_off": "agentwarden eval --config faults20_reliability_on --config faults20_reliability_off --repeats 3",
-}
 
 # (key, label, formatter, higher_is_better)
 METRICS: list[tuple[str, str, str, bool | None]] = [
@@ -243,44 +237,104 @@ def _failures(d: ReportData) -> list[str]:
     return out
 
 
+def _incidents(d: ReportData) -> list[str]:
+    ids = [r["_id"] for rs in d.latest.values() for r in rs]
+    rows = list(d.db.eval_results.find({"run_id": {"$in": ids}, "infra_incident": {"$exists": True}},
+                                       {"run_id": 1, "task_id": 1, "execution_id": 1, "passed": 1,
+                                        "failure_category": 1, "infra_incident": 1}).sort("execution_id", 1))
+    if not rows:
+        return []
+    runs = {r["_id"]: r for rs in d.latest.values() for r in rs}
+    out = ["**Infrastructure incidents** (annotation only; scores are not changed). The laptop entered Windows "
+           "Modern Standby during these executions (evidence: System log, Kernel-Power 506/507; "
+           "`scripts/annotate_standby.py`). Their latency includes the sleep time; failures among them are "
+           "infrastructure failures, not agent behaviour.", "",
+           "| Provider · Model | Config | Task | Execution | Standby overlap (s) | Result |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        run = runs[r["run_id"]]
+        out.append(f"| {run['provider']} · {run['model']} | {run['config_name']} | {r['task_id']} | "
+                   f"`{r['execution_id']}` | {r['infra_incident']['overlap_s']:.0f} | "
+                   f"{'pass' if r['passed'] else 'FAIL (' + str(r.get('failure_category')) + ')'} |")
+    return out + [""]
+
+
+MIN_RUNS_FOR_COMPARATIVE_CLAIM = 2
+
+
+def _repro(runs: list[dict], *configs: str) -> str:
+    """The exact command that reproduces these runs (provider, model, configs, repeats)."""
+    r = runs[0]
+    parts = ["agentwarden eval"]
+    if r["provider"] != "ollama":
+        parts.append("--provider cloud")
+    parts.append(f"--model {r['model']}")
+    parts += [f"--config {c}" for c in configs]
+    if "guardrails_off" in configs:
+        parts.append("--unsafe-eval")
+    parts.append(f"--repeats {len(runs)}")
+    return " ".join(parts)
+
+
 def _claims(d: ReportData) -> list[str]:
+    """Only claims the stored data supports. Comparative claims need >= 2 runs per side; with fewer, a
+    1-2 task difference on 30 tasks is indistinguishable from noise."""
     claims: list[str] = []
+    skipped: list[str] = []
     base, off = d.latest_for("baseline"), d.latest_for("guardrails_off")
     for model in sorted(set(base) & set(off)):
         b, o = base[model], off[model]
         asr_b, asr_o = _mean(d.metric_values(b, "attack_success_rate")), _mean(d.metric_values(o, "attack_success_rate"))
+        if asr_b is None or asr_o is None or asr_o <= asr_b:
+            continue
+        if min(len(b), len(o)) < MIN_RUNS_FOR_COMPARATIVE_CLAIM:
+            skipped.append(f"guardrails ON vs OFF on `{model}` ({len(b)} vs {len(o)} run(s))")
+            continue
         adv = sum(d.summaries[r["_id"]].get("adversarial", 0) for r in b)
-        if asr_b is not None and asr_o is not None and asr_o > asr_b:
-            claims.append(f"Deterministic gateway enforcement reduced attack success on adversarial tasks from "
-                          f"{asr_o:.0%} (guardrails off) to {asr_b:.0%} (guardrails on) on `{model}` "
-                          f"({adv} adversarial executions with guardrails on). "
-                          f"Reproduce: `{REPRO['guardrails_off']}`")
-    for model, b in sorted(base.items()):  # needs baseline runs only
+        claims.append(f"Deterministic gateway enforcement reduced attack success on adversarial tasks from "
+                      f"{asr_o:.0%} (guardrails off) to {asr_b:.0%} (guardrails on) on `{model}` "
+                      f"(mean of {len(o)} vs {len(b)} runs; {adv} adversarial executions with guardrails on). "
+                      f"Reproduce: `{_repro(b, 'baseline', 'guardrails_off')}`")
+    for model, b in sorted(base.items()):  # descriptive: needs baseline runs only
         att = sum(d.summaries[r["_id"]].get("unauthorized_attempts", 0) for r in b)
         blk = sum(d.summaries[r["_id"]].get("unauthorized_blocked", 0) for r in b)
         if att:
             claims.append(f"With guardrails on, the gateway blocked {blk} of {att} ({blk / att:.0%}) policy-violating "
-                          f"tool-call attempts made by `{model}`. Reproduce: `{REPRO['baseline']}`")
+                          f"tool-call attempts made by `{model}` ({len(b)} run(s)). "
+                          f"Reproduce: `{_repro(b, 'baseline')}`")
     ron, roff = d.latest_for("faults20_reliability_on"), d.latest_for("faults20_reliability_off")
     for model in sorted(set(ron) & set(roff)):
         c_on = _mean(d.metric_values(ron[model], "completion_rate"))
         c_off = _mean(d.metric_values(roff[model], "completion_rate"))
-        if c_on is not None and c_off is not None and c_on > c_off:
-            claims.append(f"Under 20% injected transient tool failures, retries with exponential backoff raised task "
-                          f"completion from {c_off:.0%} to {c_on:.0%} on `{model}` "
-                          f"(mean of {len(ron[model])} vs {len(roff[model])} runs). "
-                          f"Reproduce: `{REPRO['faults20_reliability_on']}`")
+        if c_on is None or c_off is None or c_on <= c_off:
+            continue
+        if min(len(ron[model]), len(roff[model])) < MIN_RUNS_FOR_COMPARATIVE_CLAIM:
+            skipped.append(f"reliability ON vs OFF on `{model}` ({len(ron[model])} vs {len(roff[model])} run(s))")
+            continue
+        claims.append(f"Under 20% injected transient tool failures, retries with exponential backoff raised task "
+                      f"completion from {c_off:.0%} to {c_on:.0%} on `{model}` "
+                      f"(mean of {len(ron[model])} vs {len(roff[model])} runs). "
+                      f"Reproduce: `{_repro(ron[model], 'faults20_reliability_on', 'faults20_reliability_off')}`")
     full_runs = [r for rs in d.latest.values() for r in rs]
     writes = sum(d.summaries[r["_id"]].get("sql_write_attempts", 0) for r in full_runs)
     db_modified = d.db.eval_results.count_documents(
         {"run_id": {"$in": [r["_id"] for r in full_runs]}, "failure_category": "db_modified"})
     if writes and db_modified == 0:
-        claims.append(f"Across the latest full runs the model issued {writes} SQL write/DDL/ATTACH attempts and the "
-                      f"business database was modified 0 times (three-layer read-only enforcement). "
-                      f"Reproduce: `{REPRO['guardrails_off']}`")
-    if not claims:
-        return ["_No claims yet: the stored data does not support any comparative claim._"]
-    return [f"{i}. {c}" for i, c in enumerate(claims[:5], 1)]
+        writers = sorted({(r["provider"], r["model"]) for r in full_runs
+                          if d.summaries[r["_id"]].get("sql_write_attempts", 0)})
+        cfgs = sorted({r["config_name"] for r in full_runs if d.summaries[r["_id"]].get("sql_write_attempts", 0)})
+        claims.append(f"Across the latest full runs ({len(full_runs)} runs, configs: {', '.join(cfgs)}), models issued "
+                      f"{writes} SQL write/DDL/ATTACH attempts and the business database was modified 0 times "
+                      f"(three-layer read-only enforcement; attempts came from "
+                      f"{', '.join(f'`{m}`' for _, m in writers)}). "
+                      f"Reproduce: `{_repro(base[writers[0][1]], 'baseline', 'guardrails_off')}`"
+                      if writers and writers[0][1] in base else "")
+    claims = [c for c in claims if c]
+    out = [f"{i}. {c}" for i, c in enumerate(claims[:5], 1)] or [
+        "_No claims yet: the stored data does not support any comparative claim._"]
+    if skipped:
+        out += ["", "Not claimed (direction favourable but fewer than "
+                f"{MIN_RUNS_FOR_COMPARATIVE_CLAIM} runs per side): " + "; ".join(skipped) + "."]
+    return out
 
 
 DEFINITIONS = """\
@@ -329,6 +383,8 @@ LIMITATIONS = """\
 - **Guardrails OFF is shadow mode**, not "no infrastructure": schema validation, the read-only SQLite
   connection and authorizer, and honeypot sandboxing stay on. It measures the policy layer, not raw exposure.
 - **Approvals are auto-denied in evals**: real deployments with humans in the loop face approval fatigue.
+- **Laptop sleep during runs.** Some executions overlapped Windows Modern Standby periods (listed in §4);
+  from the Groq batch onwards a keep-awake helper was used. Latency figures for affected executions are inflated.
 - **Local CPU latency** is specific to this machine (Intel Core Ultra 5 225H, no discrete GPU).
 - **Cloud latency includes rate-limit waits.** On a rate-limited cloud tier, time spent honouring HTTP 429
   `Retry-After` is part of each execution's wall-clock latency; it measures the deployment, not the model.
@@ -372,7 +428,7 @@ def build_report(db: Database) -> str:
         lines += ["**Cost basis.** Local Ollama inference is recorded as $0 (electricity not counted).", *notes, ""]
     lines += ["## 3. Run history", "", "Append-only: every completed run ever stored. `*` = uncommitted code changes.",
               "", *_history(d), *_aborted(d), ""]
-    lines += ["## 4. Failure analysis", "", *_failures(d)]
+    lines += ["## 4. Failure analysis", "", *_failures(d), *_incidents(d)]
     lines += ["## 5. Metric definitions", "", DEFINITIONS, ""]
     lines += ["## 6. Limitations", "",
               LIMITATIONS.format(n_tasks=n_tasks, n_adv=n_adv, flip=100 / n_tasks if n_tasks else 0), ""]

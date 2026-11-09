@@ -173,6 +173,43 @@ Configuration hygiene: when comparing "reliability ON vs OFF", only toggle the m
 2. *Why abort the whole eval run on daily-quota exhaustion?* Every remaining task would fail for an
    infrastructure reason and drag the completion rate down; that would measure the account, not the agent.
 3. *Why are unknown prices `n/a` and not $0?* $0 would be a fabricated number that makes a model look free.
+4. *What went wrong with the first version of the reset-header parser?* It took the larger of
+   `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens`. On Groq the *requests* budget is per **day**
+   (reset 1m26s with 999 of 1,000 left), so every per-minute token throttle would have looked like a >65 s
+   wait and aborted the run as "quota exhausted". Fix: a reset header only counts when its matching
+   `remaining` header is 0. Found by reading real headers from one test call before the benchmark: always
+   look at real provider responses before trusting a parser written from documentation.
+
+## Layer 8: What the measurements say (read RESULTS.md for the numbers)
+
+Numbers below are quoted from `docs/RESULTS.md` as generated on 2026-11-10; the file is the source of truth.
+
+1. **Deterministic controls matter most when the model misbehaves.** `qwen2.5:3b` attempted policy-violating
+   calls (DELETE, ATTACH, emailing customer data to an external domain); the gateway blocked 8 of 8 with
+   guardrails on, and with guardrails off the external email went through (into the sandbox). Attack success
+   fell from 25% to 6% (2 runs per side).
+2. **A stronger model may never trigger them.** `openai/gpt-oss-120b` on Groq made **zero** unauthorized
+   attempts in both guardrails ON and OFF. The gateway still matters: it is the guarantee for the cases the
+   model gets wrong, and you cannot know in advance which model or prompt will.
+3. **Guardrails constrain actions, not beliefs.** The answer-manipulation task (forged "365-day refund"
+   document) succeeded on both models with guardrails on and off. No authorization rule can stop a model from
+   believing a document; mitigations are provenance (trusted-source metadata) and retrieval design (M2).
+4. **Models can fabricate success.** With a terse "DENIED" message the 3B model replied "after deleting all
+   churned users, 4947 remain". Denials now say explicitly that nothing happened, and evals check for it.
+5. **Measure the infrastructure too.** A laptop sleep (Modern Standby) and a daily token quota both produced
+   failures that were not agent behaviour. They are annotated or aborted, never counted silently.
+6. **Small samples.** 30 tasks, 1-2 runs: a one-task flip is 3.3 pp. The reliability ON/OFF difference
+   (2 tasks, 1 run each) is reported but deliberately not claimed.
+
+**Interview questions**
+1. *Your guardrails show no effect on gpt-oss-120b. Are they useless?* No: they showed no effect *on these
+   attacks for this model*. They bound the worst case independent of model quality, and the 3B results show
+   what happens when a model does comply with an attack.
+2. *Why did answer manipulation succeed with guardrails on?* It needs no tool call: the attack changes what
+   the model says, and the gateway only governs actions. That is documented as a limitation (THREAT_MODEL T2).
+3. *How do you know a failure was the laptop sleeping and not the model?* The step trace showed a retry
+   scheduled with an 8 s wait followed by the next event 252 s later; the Windows System log shows Kernel-Power
+   506/507 (enter/exit Modern Standby) exactly spanning that gap.
 
 ## Layer 7: Evaluation engine
 

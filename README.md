@@ -13,6 +13,11 @@ and records every decision in MongoDB. An evaluation runner measures what this b
 - Measured results: [docs/RESULTS.md](docs/RESULTS.md)
 - Learning notes: [docs/LEARNING_NOTES.md](docs/LEARNING_NOTES.md)
 
+## Results at a glance
+See [docs/RESULTS.md](docs/RESULTS.md) (generated from MongoDB): local `qwen2.5:3b` vs Groq
+`openai/gpt-oss-120b` on 30 tasks, guardrails ON/OFF and reliability ON/OFF under fault injection, with
+failure analysis, infrastructure incidents and limitations.
+
 ## Requirements
 - Python ≥ 3.12, Docker (for MongoDB), [Ollama](https://ollama.com) for the local model.
 - No paid API is needed. The optional cloud provider is disabled unless `AW_ALLOW_CLOUD=1` (see below).
@@ -50,7 +55,7 @@ provider unless you opt in. In `.env`:
 AW_ALLOW_CLOUD=1
 AW_CLOUD_BASE_URL=https://api.groq.com/openai/v1
 AW_CLOUD_API_KEY=gsk_...                 # never commit .env (it is git-ignored)
-AW_CLOUD_MODEL=llama-3.3-70b-versatile
+AW_CLOUD_MODEL=openai/gpt-oss-120b      # list what your key can use: GET {base_url}/models
 ```
 ```bash
 agentwarden run "How many users are on the pro plan?" --provider cloud
@@ -64,11 +69,19 @@ agentwarden eval --provider cloud --config faults20_reliability_on --config faul
 - **Cost.** Estimated from [`agentwarden/pricing.yaml`](agentwarden/pricing.yaml) (USD per 1M tokens, with a
   source and a `verified` flag per entry). Unknown models are reported as `n/a`, never as $0.
 - The demo data sent to the provider is synthetic (seeded generator); no real customer data exists here.
+- Groq free/dev tiers are limited per organisation (e.g. 8,000 tokens/min and 1,000 requests/day were reported
+  by the API for `openai/gpt-oss-120b` on 2026-11-10; tokens/day is not in the headers — check the console).
+  One 30-task run uses roughly 60–100k tokens.
 
 ## Reliability configurations
 `faults20_reliability_on/off` inject 20% transient failures into **tool** calls. Reliability OFF disables
 tool retries and loop detection; **model-call retries stay on in both**, so provider rate limits do not
 confound the tool-reliability comparison.
+
+## Long benchmark runs on a laptop
+Windows may enter Modern Standby mid-run, which freezes the process and can fail a task on its deadline.
+Keep the machine awake (plugged in, lid open) and, after a run, annotate any affected executions:
+`python scripts/annotate_standby.py` (Windows only; annotation never changes scores).
 
 ## Tests
 ```bash
