@@ -39,6 +39,17 @@ def test_parse_retry_after_prefers_header_then_reset_headers():
     assert parse_retry_after({"Retry-After": "3"}) == 3
     assert parse_retry_after({"x-ratelimit-reset-requests": "2s", "x-ratelimit-reset-tokens": "7.5s"}) == 7.5
     assert parse_retry_after({}) is None
+
+
+def test_reset_header_ignored_when_budget_not_exhausted():
+    """Real Groq header shape (2026-11-10): the per-DAY request budget resets in 1m26s but 999 remain, so it
+    must not count; otherwise every per-minute token throttle would look like quota exhaustion."""
+    tpm_throttle = {"x-ratelimit-limit-requests": "1000", "x-ratelimit-remaining-requests": "999",
+                    "x-ratelimit-reset-requests": "1m26.4s", "x-ratelimit-limit-tokens": "8000",
+                    "x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.882s"}
+    assert parse_retry_after(tpm_throttle) == pytest.approx(7.882)
+    not_blocked = {**tpm_throttle, "x-ratelimit-remaining-tokens": "6949"}
+    assert parse_retry_after(not_blocked) is None
     assert parse_retry_after({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}) == 0.0  # past date -> no wait
 
 

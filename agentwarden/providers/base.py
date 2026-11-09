@@ -97,8 +97,18 @@ def parse_retry_after(headers: Mapping[str, str]) -> float | None:
             return max((when - datetime.now(UTC)).total_seconds(), 0.0)
         except (TypeError, ValueError):
             pass
-    resets = [parse_duration(h[k]) for k in ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens") if k in h]
-    resets = [r for r in resets if r is not None]
+    # Only a budget that is actually exhausted blocks us. E.g. on Groq the *requests* budget is per day and its
+    # reset time is long even when plenty remain; counting it would turn every TPM throttle into a fake
+    # "quota exhausted". A missing remaining-* header is treated as exhausted (conservative).
+    resets = []
+    for kind in ("requests", "tokens"):
+        reset = h.get(f"x-ratelimit-reset-{kind}")
+        remaining = h.get(f"x-ratelimit-remaining-{kind}")
+        if reset is None or (remaining is not None and remaining.strip() not in ("0", "0.0")):
+            continue
+        secs = parse_duration(reset)
+        if secs is not None:
+            resets.append(secs)
     return max(resets) if resets else None
 
 
