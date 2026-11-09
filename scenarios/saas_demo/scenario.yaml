@@ -2,8 +2,8 @@ name: saas_demo
 company: Lumora
 database: data/lumora.db
 documents_dir: documents
-tasks_file: tasks/v1.yaml
-task_set_version: v1
+tasks_file: tasks/tasks.yaml
+task_set_version: v2
 data_seed: 42
 allowed_email_domains: [lumora.example]
 default_agent: support_analyst

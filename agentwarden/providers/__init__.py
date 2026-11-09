@@ -12,14 +12,25 @@ class CloudNotAllowed(RuntimeError):
     pass
 
 
+THINKING_FAMILIES = ("qwen3", "deepseek-r1", "gpt-oss", "magistral", "phi4-reasoning")
+
+
+def resolve_think(mode: str, model: str) -> bool | None:
+    """None = omit the flag (non-thinking models reject think=true and may reject the field)."""
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    if mode == "omit":
+        return None
+    return False if model.lower().startswith(THINKING_FAMILIES) else None
+
+
 def build_provider(settings: Settings, provider: str = "ollama", model: str | None = None) -> ModelProvider:
     if provider == "ollama":
-        return OllamaProvider(
-            model or settings.model,
-            settings.ollama_url,
-            num_ctx=settings.ollama_num_ctx,
-            think=settings.ollama_think,
-        )
+        name = model or settings.model
+        return OllamaProvider(name, settings.ollama_url, num_ctx=settings.ollama_num_ctx,
+                              think=resolve_think(settings.ollama_think, name))
     if provider == "cloud":
         # Cost guard (THREAT_MODEL T12): explicit opt-in + key + model required.
         if not settings.allow_cloud:

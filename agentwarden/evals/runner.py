@@ -17,7 +17,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agentwarden.config import AgentConfig, FaultConfig, GuardrailsConfig, ReliabilityConfig, RetryPolicy, Settings
+from agentwarden.config import (
+    AgentConfig,
+    FaultConfig,
+    GuardrailsConfig,
+    ReliabilityConfig,
+    RetryPolicy,
+    Settings,
+)
 from agentwarden.evals import checks as ck
 from agentwarden.evals.metrics import run_summary
 from agentwarden.evals.tasks import Task, load_tasks
@@ -96,7 +103,7 @@ def score(task: Task, res, store: MongoStore, scenario: Scenario, db_sha_before:
 
 def run_config(*, store: MongoStore, scenario: Scenario, registry: ToolRegistry, provider: ModelProvider,
                tasks: list[Task], config_name: str, repeat_index: int, seed: int, batch_id: str,
-               task_set: str, label: str | None) -> dict[str, Any]:
+               task_set: str, label: str | None, full_task_set: bool) -> dict[str, Any]:
     overrides, faults_cfg, _unsafe = preset(config_name)
     cfg: AgentConfig = scenario.agent().model_copy(update={**overrides, "seed": seed})
     sha, dirty = git_info()
@@ -109,6 +116,7 @@ def run_config(*, store: MongoStore, scenario: Scenario, registry: ToolRegistry,
         "guardrails": cfg.guardrails.enabled, "reliability": cfg.reliability.retries.enabled,
         "fault_injection": faults_cfg.model_dump(), "scenario": scenario.name, "task_set": task_set,
         "task_set_version": scenario.task_set_version, "task_ids": [t.id for t in tasks],
+        "full_task_set": full_task_set,
         "seed": seed, "repeat_index": repeat_index, "data_seed": scenario.data_seed, "db_sha256": db_sha,
         "status": "running",
     }
@@ -157,6 +165,7 @@ def cmd_eval(a: argparse.Namespace, settings: Settings) -> int:
     if is_heldout != a.heldout:
         raise SystemExit("held-out tasks require --heldout (and --heldout requires a held-out tasks file)")
     tasks = load_tasks(tasks_path)
+    n_all = len(tasks)
     if a.tasks:
         tasks = [t for t in tasks if t.id in set(a.tasks)]
     configs = a.config or ["baseline"]
@@ -172,5 +181,6 @@ def cmd_eval(a: argparse.Namespace, settings: Settings) -> int:
         for c in configs:
             run_config(store=store, scenario=scenario, registry=registry, provider=provider, tasks=tasks,
                        config_name=c, repeat_index=r, seed=a.seed + r, batch_id=batch_id,
-                       task_set="heldout" if is_heldout else "dev", label=a.label)
+                       task_set="heldout" if is_heldout else "dev", label=a.label,
+                       full_task_set=len(tasks) == n_all)
     return 0

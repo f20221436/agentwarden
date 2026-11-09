@@ -6,6 +6,7 @@ Pydantic model so it can be snapshotted verbatim into ``executions`` and ``eval_
 
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import quote_plus
 
 from pydantic import BaseModel, Field, SecretStr
@@ -24,7 +25,8 @@ class Settings(BaseSettings):
     ollama_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3:4b"
     ollama_num_ctx: int = 8192
-    ollama_think: bool | None = False  # None = don't send the flag (non-thinking models)
+    # auto: send think=false to known thinking models (qwen3, deepseek-r1, ...), omit for others
+    ollama_think: Literal["auto", "on", "off", "omit"] = "auto"
 
     allow_cloud: bool = False
     cloud_base_url: str | None = None

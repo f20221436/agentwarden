@@ -12,8 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agentwarden.gateway.spec import ToolContext, ToolOutput, ToolSpec, Trust
 
-_STOP = set("a an the of to in on for and or is are be by with at from as it this that what which how do does "
-            "can i we you our your".split())
+_STOP = set(["a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "is", "are", "be", "by", "with", "at", "from", "as", "it", "this", "that", "what", "which", "how", "do", "does", "can", "i", "we", "you", "our", "your"])
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 

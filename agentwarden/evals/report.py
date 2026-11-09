@@ -13,7 +13,6 @@ import statistics
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from pymongo.database import Database
 
@@ -92,6 +91,8 @@ class ReportData:
         self.summaries = {r["_id"]: run_summary(db, r["_id"]) for r in self.runs}
         groups: dict[tuple, list[dict]] = defaultdict(list)
         for r in self.runs:
+            if not r.get("full_task_set", False):
+                continue  # partial (subset) runs appear in history only, never in summaries/comparisons/claims
             groups[(r.get("task_set", "dev"), r["config_name"], r["model"], r["task_set_version"])].append(r)
         # Latest batch per (task_set, config, model, version): the batch of the most recent run.
         self.latest: dict[tuple, list[dict]] = {}
@@ -148,7 +149,7 @@ def _comparison(d: ReportData, title: str, a_cfg: str, b_cfg: str) -> list[str]:
 
 def _history(d: ReportData) -> list[str]:
     lines = ["| Date (UTC) | Run | Commit | Model | Config | Task set | Seed | Faults | Tasks | Completion | "
-             "Attack success | p50 s |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "Attack success | p50 s | Label |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in d.runs:
         s = d.summaries[r["_id"]]
         sha = (r.get("git_sha") or "n/a")[:7] + ("*" if r.get("git_dirty") else "")
@@ -156,7 +157,8 @@ def _history(d: ReportData) -> list[str]:
             f"| {r['created_at']:%Y-%m-%d %H:%M} | `{r['_id']}` | `{sha}` | {r['model']} | {r['config_name']} | "
             f"{r.get('task_set', 'dev')}/{r['task_set_version']} | {r['seed']} | "
             f"{r['fault_injection']['failure_rate']:.0%} | {s.get('tasks', 0)} | {_fmt(s.get('completion_rate'), 'pct')} | "
-            f"{_fmt(s.get('attack_success_rate'), 'pct')} | {_fmt(s.get('latency_p50_ms'), 'sec')} |")
+            f"{_fmt(s.get('attack_success_rate'), 'pct')} | {_fmt(s.get('latency_p50_ms'), 'sec')} | "
+            f"{r.get('label') or ''}{'' if r.get('full_task_set') else ' (subset)'} |")
     return lines
 
 
@@ -207,10 +209,12 @@ def _claims(d: ReportData) -> list[str]:
                           f"completion from {c_off:.0%} to {c_on:.0%} on `{model}` "
                           f"(mean of {len(ron[model])} vs {len(roff[model])} runs). "
                           f"Reproduce: `{REPRO['faults20_reliability_on']}`")
-    writes = sum(d.summaries[r["_id"]].get("sql_write_attempts", 0) for r in d.runs)
-    db_modified = d.db.eval_results.count_documents({"failure_category": "db_modified"})
+    full_runs = [r for rs in d.latest.values() for r in rs]
+    writes = sum(d.summaries[r["_id"]].get("sql_write_attempts", 0) for r in full_runs)
+    db_modified = d.db.eval_results.count_documents(
+        {"run_id": {"$in": [r["_id"] for r in full_runs]}, "failure_category": "db_modified"})
     if writes and db_modified == 0:
-        claims.append(f"Across all recorded runs the model issued {writes} SQL write/DDL/ATTACH attempts and the "
+        claims.append(f"Across the latest full runs the model issued {writes} SQL write/DDL/ATTACH attempts and the "
                       f"business database was modified 0 times (three-layer read-only enforcement). "
                       f"Reproduce: `{REPRO['guardrails_off']}`")
     if not claims:
@@ -279,7 +283,7 @@ def build_report(db: Database) -> str:
         "",
         "## 1. Latest summary",
         "",
-        "Latest batch of each configuration (dev task set).",
+        "Latest batch of each configuration (dev task set, full-task-set runs only).",
         "",
         *_summary_table(d, "dev"),
         "",

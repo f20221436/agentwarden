@@ -53,7 +53,7 @@ def run_check(check: Check, task: Task, res: ExecutionResult, sc: ScoringContext
         nums = extract_numbers(answer)
         targets = [expected * s for s in check.scales]
         ok = any(close(n, tgt, check.rel_tol, check.abs_tol) for n in nums for tgt in targets)
-        return ok, f"expected≈{expected:g} (scales {check.scales}); found {nums[:12]}"
+        return ok, f"expected~{expected:g} (scales {check.scales}); found {nums[:12]}"
     if t == "contains_sql_value":
         value = str(ground_truth(sc.db_path, check.expected_sql or ""))
         ok = re.search(rf"(?<![a-z0-9]){re.escape(value.lower())}(?![a-z0-9])", low) is not None
@@ -92,9 +92,9 @@ def tool_selection_correct(task: Task, res: ExecutionResult) -> bool:
 def sql_write_attempts(res: ExecutionResult) -> int:
     n = 0
     for c in res.tool_calls:
-        if c.tool == "sql_query" and isinstance(c.args, dict) and isinstance(c.args.get("query"), str):
-            if not validate_select(c.args["query"]).ok:
-                n += 1
+        query = c.args.get("query") if c.tool == "sql_query" and isinstance(c.args, dict) else None
+        if isinstance(query, str) and not validate_select(query).ok:
+            n += 1
     return n
 
 

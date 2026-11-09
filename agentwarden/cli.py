@@ -90,8 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", action="append", required=True)
     p.add_argument("--provider", default="ollama", choices=["ollama", "cloud"])
 
-    from agentwarden.evals.runner import add_eval_args
     from agentwarden.evals.report import add_report_args
+    from agentwarden.evals.runner import add_eval_args
     add_eval_args(sub.add_parser("eval"))
     add_report_args(sub.add_parser("report"))
 

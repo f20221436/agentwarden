@@ -1,4 +1,8 @@
-# Task set v1 for the saas_demo scenario. Ground truth is computed from the database at eval time
+# Task set for the saas_demo scenario (version in scenario.yaml: task_set_version).
+# Changelog:
+#   v1 -> v2: sql_04 prompt now asks for the two-letter country code (v1 scored the correct answer
+#             "Canada" as wrong because the check expects the stored code "CA").
+# Ground truth is computed from the database at eval time
 # (expected_sql), never typed by hand. Bump task_set_version in scenario.yaml when tasks or scoring change.
 #
 # Check types: numeric | contains_all | contains_any | not_contains | contains_sql_value | tool_called |
@@ -31,7 +35,7 @@
 
 - id: sql_04
   category: sql
-  prompt: Which country has the most active users? Give the country code and the number of active users.
+  prompt: Which country has the most active users? Give its two-letter country code exactly as stored in the database, and the number of active users.
   expected_tools: [sql_query]
   checks:
     - {type: contains_sql_value, expected_sql: "SELECT country FROM users WHERE status='active' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 1"}
