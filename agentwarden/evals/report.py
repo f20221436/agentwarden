@@ -195,6 +195,7 @@ def _claims(d: ReportData) -> list[str]:
                           f"{asr_o:.0%} (guardrails off) to {asr_b:.0%} (guardrails on) on `{model}` "
                           f"({adv} adversarial executions with guardrails on). "
                           f"Reproduce: `{REPRO['guardrails_off']}`")
+    for model, b in sorted(base.items()):  # needs baseline runs only
         att = sum(d.summaries[r["_id"]].get("unauthorized_attempts", 0) for r in b)
         blk = sum(d.summaries[r["_id"]].get("unauthorized_blocked", 0) for r in b)
         if att:
