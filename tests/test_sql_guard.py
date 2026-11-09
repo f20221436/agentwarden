@@ -40,8 +40,9 @@ def test_layer1_rejects_writes(sql):
 
 
 @pytest.mark.parametrize("sql", [s for s in FORBIDDEN if ";" not in s])
-def test_layer2_readonly_connection_alone_blocks_writes(db_path, tmp_path, sql):
-    """mode=ro + query_only WITHOUT the authorizer: the engine still refuses to write."""
+def test_layer2_readonly_connection_alone_blocks_data_writes(db_path, tmp_path, monkeypatch, sql):
+    """mode=ro + query_only WITHOUT the authorizer: the business database is never modified."""
+    monkeypatch.chdir(tmp_path)  # relative ATTACH paths resolve here, not in the repo
     copy = tmp_path / "copy.db"
     shutil.copy(db_path, copy)
     con = sqlite3.connect(copy.resolve().as_uri() + "?mode=ro", uri=True)
@@ -55,13 +56,35 @@ def test_layer2_readonly_connection_alone_blocks_writes(db_path, tmp_path, sql):
     finally:
         con.close()
     assert copy.read_bytes() == before
-    # ATTACH may "succeed" read-only but must not create a file
+
+
+def test_layer2_alone_lets_attach_create_an_empty_file(db_path, tmp_path, monkeypatch):
+    """Documented finding (THREAT_MODEL T4): a read-only connection alone still lets ATTACH create a new,
+    empty file on the host (writes into it are refused). This is why layer 3 (the authorizer) exists."""
+    monkeypatch.chdir(tmp_path)
+    shutil.copy(db_path, tmp_path / "copy.db")
+    con = sqlite3.connect((tmp_path / "copy.db").resolve().as_uri() + "?mode=ro", uri=True)
+    con.execute("PRAGMA query_only = ON")
+    con.execute("ATTACH DATABASE 'x.db' AS x")
+    with pytest.raises(sqlite3.OperationalError):
+        con.execute("CREATE TABLE x.t(a)")
+    con.close()
+    assert (tmp_path / "x.db").exists() and (tmp_path / "x.db").stat().st_size == 0
+
+
+def test_full_stack_attach_creates_no_file(db_path, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    con = open_readonly(db_path)
+    with pytest.raises(sqlite3.DatabaseError):
+        con.execute("ATTACH DATABASE 'x.db' AS x")
+    con.close()
     assert not (tmp_path / "x.db").exists()
 
 
 @pytest.mark.parametrize("sql", [s for s in FORBIDDEN if ";" not in s])
-def test_layer3_authorizer_alone_blocks_writes(db_path, tmp_path, sql):
+def test_layer3_authorizer_alone_blocks_writes(db_path, tmp_path, monkeypatch, sql):
     """A WRITABLE connection with only the authorizer installed must still refuse."""
+    monkeypatch.chdir(tmp_path)
     copy = tmp_path / "copy.db"
     shutil.copy(db_path, copy)
     con = sqlite3.connect(copy)

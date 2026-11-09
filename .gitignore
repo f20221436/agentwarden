@@ -14,3 +14,4 @@ dist/
 scenarios/*/data/
 # raw eval JSON is committed deliberately (evidence for RESULTS.md); scratch runs are not
 evals/results/scratch/
+/*.db
