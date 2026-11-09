@@ -23,6 +23,7 @@ from agentwarden.gateway.approvals import Approver, AutoDenyApprover
 from agentwarden.gateway.gateway import CallContext, Gateway, Observation
 from agentwarden.ids import new_id
 from agentwarden.observability import Tracer
+from agentwarden.pricing import lookup as lookup_price
 from agentwarden.providers.base import ChatMessage, ModelProvider, ModelResponse, ProviderError, Usage
 from agentwarden.reliability.retry import RetryOutcome, call_with_retry
 from agentwarden.runtime.prompts import system_prompt
@@ -75,6 +76,7 @@ class ExecutionResult:
     model_retries: int
     duration_ms: float
     events: list[dict[str, Any]] = field(default_factory=list)
+    error_kind: str | None = None  # model_error | rate_limited | quota_exhausted | internal_error
 
     @property
     def tool_retries(self) -> int:
@@ -96,7 +98,7 @@ class Agent:
         company: str,
         approver: Approver | None = None,
         git_sha: str | None = None,
-        price_per_mtok: tuple[float, float] | None = None,  # (input, output) USD; None = unknown
+        price_per_mtok: tuple[float, float] | None = None,  # override; default = agentwarden/pricing.yaml
     ):
         self.provider = provider
         self.gateway = gateway
@@ -109,11 +111,14 @@ class Agent:
         self.tool_schemas = gateway.registry.schemas(config.tools)
 
     def _cost(self, usage: Usage) -> float | None:
-        if self.provider.name == "ollama":
-            return 0.0
-        if self.price_per_mtok is None:
+        """Estimated USD cost; None when no price is known (never guessed)."""
+        price = self.price_per_mtok
+        if price is None:
+            p = lookup_price(self.provider.name, self.provider.model)
+            price = (p.input, p.output) if p else None
+        if price is None:
             return None
-        pin, pout = self.price_per_mtok
+        pin, pout = price
         return round(usage.input_tokens / 1e6 * pin + usage.output_tokens / 1e6 * pout, 6)
 
     def run(self, prompt: str, *, task_id: str | None = None, eval_run_id: str | None = None,
@@ -132,7 +137,7 @@ class Agent:
         tracer = Tracer(self.store, execution_id, ephemeral=ephemeral)
         ctx = CallContext(
             execution_id=execution_id, agent_id=cfg.agent_id, capabilities=frozenset(cfg.capabilities),
-            guardrails=cfg.guardrails, retry=cfg.reliability.retries, deadline=deadline, tracer=tracer,
+            guardrails=cfg.guardrails, retry=cfg.reliability.tool_retries, deadline=deadline, tracer=tracer,
             fault_scope=task_id or execution_id, approver=self.approver,
         )
         messages = [
@@ -156,6 +161,7 @@ class Agent:
         final = ""
         last_content = ""
         reason: Reason | None = None
+        error_kind: str | None = None
         rng = random.Random(cfg.seed)
 
         try:
@@ -216,10 +222,14 @@ class Agent:
                         break
         except ProviderError as e:
             reason = Reason.MODEL_ERROR
-            tracer.emit("error", kind="model", error=str(e)[:300], transient=e.transient)
+            error_kind = ("quota_exhausted" if e.quota_exhausted else
+                          "rate_limited" if e.status == 429 else "model_error")
+            tracer.emit("error", kind=error_kind, error=str(e)[:300], transient=e.transient,
+                        retry_after_s=e.retry_after_s)
         except Exception as e:  # safe termination: record, never crash the caller silently
             log.exception("internal error in execution %s", execution_id)
             reason = Reason.INTERNAL_ERROR
+            error_kind = "internal_error"
             tracer.emit("error", kind="internal", error=f"{type(e).__name__}: {e}"[:300])
 
         assert reason is not None
@@ -230,7 +240,7 @@ class Agent:
         result = ExecutionResult(
             execution_id=execution_id, status=status, termination_reason=reason.value, final_answer=final,
             canary=canary, steps=steps, tool_calls=records, usage=usage, model_retries=model_retries,
-            duration_ms=duration_ms, events=tracer.events,
+            duration_ms=duration_ms, events=tracer.events, error_kind=error_kind,
         )
         tracer.emit("execution_finished", status=status, termination_reason=reason.value,
                     duration_ms=duration_ms)
@@ -243,7 +253,7 @@ class Agent:
                 "denied": sum(1 for r in records if r.error_type in ("policy_denied", "approval_denied")),
                 "tool_retries": result.tool_retries, "model_retries": model_retries,
             },
-            "usage": usage.model_dump(), "est_cost_usd": self._cost(usage),
+            "usage": usage.model_dump(), "est_cost_usd": self._cost(usage), "error_kind": error_kind,
         })
         return result
 
@@ -268,5 +278,5 @@ class Agent:
             tracer.emit("retry_scheduled", target="model", after_attempt=k, delay_s=round(delay, 3),
                         error=str(exc)[:200])
 
-        return call_with_retry(attempt, policy=self.config.reliability.retries, retryable=True, deadline=deadline,
+        return call_with_retry(attempt, policy=self.config.reliability.model_retries, retryable=True, deadline=deadline,
                                outcome=outcome, rng=rng, on_retry=on_retry)

@@ -6,6 +6,7 @@ Disabled unless ``AW_ALLOW_CLOUD=1`` and a key is configured (enforced in ``prov
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -19,13 +20,14 @@ from agentwarden.providers.base import (
     ToolCall,
     Usage,
     classify_http_status,
+    parse_retry_after,
 )
 
 
 class OpenAICompatProvider:
-    name = "openai_compat"
-
-    def __init__(self, model: str, base_url: str, api_key: str, *, client: httpx.Client | None = None):
+    def __init__(self, model: str, base_url: str, api_key: str, *, name: str = "openai_compat",
+                 client: httpx.Client | None = None):
+        self.name = name
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -76,16 +78,23 @@ class OpenAICompatProvider:
                 timeout=timeout_s,
             )
         except httpx.TimeoutException as e:
-            raise ProviderError(f"cloud timeout after {timeout_s:.1f}s", transient=True) from e
+            raise ProviderError(f"{self.name} timeout after {timeout_s:.1f}s", transient=True) from e
         except httpx.TransportError as e:
-            raise ProviderError(f"cloud connection error: {type(e).__name__}", transient=True) from e
+            raise ProviderError(f"{self.name} connection error: {type(e).__name__}", transient=True) from e
         latency_ms = (time.perf_counter() - t0) * 1000
+        if r.status_code == 429:
+            body = r.text[:400]
+            # Daily quotas (e.g. "tokens per day (TPD)") cannot be waited out inside one task.
+            daily = bool(re.search(r"per day|\bTPD\b|\bRPD\b|daily", body, re.I))
+            raise ProviderError(f"{self.name} rate limited (429): {body}", transient=not daily, status=429,
+                                retry_after_s=parse_retry_after(r.headers), quota_exhausted=daily)
         if r.status_code != 200:
             # Never echo headers; body text is truncated and contains no key.
             raise ProviderError(
-                f"cloud HTTP {r.status_code}: {r.text[:300]}",
+                f"{self.name} HTTP {r.status_code}: {r.text[:300]}",
                 transient=classify_http_status(r.status_code),
                 status=r.status_code,
+                retry_after_s=parse_retry_after(r.headers) if r.status_code == 503 else None,
             )
         data = r.json()
         choice = (data.get("choices") or [{}])[0]

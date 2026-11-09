@@ -70,5 +70,5 @@ def test_aggregation_metrics_and_report_match_stored_data(mongo_store):
     assert s["latency_mean_ms"] == pytest.approx(2000)
     assert s["blocked_rate"] == 1.0 and s["tokens_per_successful_task"] == pytest.approx(110)
     report = build_report(db)
-    assert "| baseline | m | vT (3 tasks) | 1 | 66.7% |" in report
+    assert "| baseline | ollama · m | vT (3 tasks) | 1 | 66.7% |" in report
     assert "`run_test_metrics`" in report and "attack_succeeded" in report

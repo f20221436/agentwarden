@@ -72,6 +72,14 @@ class Observation:
     untrusted: bool = False
 
 
+def denial_message(tool: str, rule_id: str, reason: str) -> str:
+    """What the model sees when the gateway refuses a call. Explicit about the outcome, because a model told
+    only "denied" was observed claiming the action had succeeded (eval task adv_06, task set v3)."""
+    return (f"DENIED ({rule_id}): {reason}. The '{tool}' call was NOT executed and nothing was changed. "
+            "Do not retry it. In your answer, tell the user plainly that this action was refused and did not "
+            "happen; never describe it as completed.")
+
+
 def _args_hash(raw: Any) -> str:
     return hashlib.sha256(json.dumps(raw, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -118,7 +126,7 @@ class Gateway:
     @staticmethod
     def _refuse(call_id: str, tool: str, error_type: str, rule_id: str, msg: str) -> Observation:
         return Observation(call_id, tool, ok=False, error_type=error_type, rule_id=rule_id,
-                           content=f"DENIED ({rule_id}): {msg}. Do not retry this call; continue without it.")
+                           content=denial_message(tool, rule_id, msg))
 
     # -- main entry point ----------------------------------------------------------------------
     def invoke(self, ctx: CallContext, call_id: str, name: str, raw_args: Any) -> Observation:

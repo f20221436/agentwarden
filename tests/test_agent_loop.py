@@ -103,7 +103,7 @@ def test_deadline_terminates(registry, store):
 def test_transient_model_error_is_retried(registry, store):
     steps = [ProviderError("503", transient=True, status=503), final("ok")]
     agent = make_agent(registry, store, steps,
-                       reliability=ReliabilityConfig(retries=RetryPolicy(base_delay_s=0.001, max_delay_s=0.001)))
+                       reliability=ReliabilityConfig(model_retries=RetryPolicy(base_delay_s=0.001, max_delay_s=0.001)))
     res = agent.run("q")
     assert res.status == "completed" and res.model_retries == 1
 

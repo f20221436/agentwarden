@@ -46,6 +46,9 @@ def call_with_retry(
 ) -> T:
     """Call ``fn(attempt_no)``; retry only transient errors, only if ``retryable`` and policy enabled.
 
+    If the error carries ``retry_after_s`` (HTTP 429 Retry-After), the wait is at least that long; a wait
+    above ``policy.max_retry_after_s`` is not attempted.
+
     ``retryable`` is False for non-idempotent operations: they are never retried blindly.
     Never sleeps past ``deadline`` (a ``time.monotonic()`` value).
     """
@@ -62,6 +65,14 @@ def call_with_retry(
             if attempt >= max_attempts or not is_transient(exc):
                 raise
             delay = backoff_delay(attempt, policy, rng)
+            server_wait = getattr(exc, "retry_after_s", None)
+            if server_wait is not None:
+                if server_wait > policy.max_retry_after_s:
+                    # Asked to wait longer than we tolerate (e.g. a daily quota): fail fast, flag it.
+                    if hasattr(exc, "quota_exhausted"):
+                        exc.quota_exhausted = True
+                    raise
+                delay = max(delay, server_wait)  # never retry sooner than the server asked
             if clock() + delay >= deadline:
                 raise
             outcome.delays.append(delay)

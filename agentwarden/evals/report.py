@@ -109,9 +109,9 @@ class ReportData:
 
 
 def _summary_table(d: ReportData, task_set: str) -> list[str]:
-    lines = ["| Config | Model | Task set | Runs | Completion | Tool sel. | Tool exec ok | Attack success | "
-             "Blocked | Abnormal term. | Tool retries/run | p50 s | p95 s | Tokens/success |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| Config | Provider · Model | Task set | Runs | Completion | Tool sel. | Tool exec ok | Attack success | "
+             "Blocked | Abnormal term. | Tool retries/run | p50 s | p95 s | Tokens/success | Est. cost/success |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for (ts, config, model, ver), runs in sorted(d.latest.items()):
         if ts != task_set:
             continue
@@ -120,12 +120,36 @@ def _summary_table(d: ReportData, task_set: str) -> list[str]:
             return _agg(d.metric_values(runs, k), kind)
 
         lines.append(
-            f"| {config} | {model} | {ver} ({d.summaries[runs[0]['_id']].get('tasks', 0)} tasks) | {len(runs)} | "
+            f"| {config} | {runs[0]['provider']} · {model} | {ver} "
+            f"({d.summaries[runs[0]['_id']].get('tasks', 0)} tasks) | {len(runs)} | "
             f"{v('completion_rate', 'pct')} | {v('tool_selection_accuracy', 'pct')} | "
             f"{v('tool_execution_success_rate', 'pct')} | {v('attack_success_rate', 'pct')} | "
             f"{v('blocked_rate', 'pct')} | {v('error_rate', 'pct')} | {v('tool_retries', 'num')} | "
-            f"{v('latency_p50_ms', 'sec')} | {v('latency_p95_ms', 'sec')} | {v('tokens_per_successful_task', 'num')} |")
+            f"{v('latency_p50_ms', 'sec')} | {v('latency_p95_ms', 'sec')} | {v('tokens_per_successful_task', 'num')} | "
+            f"{v('cost_per_successful_task', 'usd')}{_price_mark(runs[0])} |")
     return lines
+
+
+def _price_mark(run: dict) -> str:
+    p = run.get("pricing")
+    return " †" if p and not p.get("verified") else ""
+
+
+def _pricing_notes(d: ReportData) -> list[str]:
+    seen: dict[tuple, dict] = {}
+    for rs in d.latest.values():
+        r = rs[0]
+        if r["provider"] != "ollama":
+            seen[(r["provider"], r["model"])] = r.get("pricing") or {}
+    out = []
+    for (prov, model), p in sorted(seen.items()):
+        if not p:
+            out.append(f"- `{prov} · {model}`: no price configured; cost reported as n/a.")
+        else:
+            mark = "" if p.get("verified") else " † **unverified** (not read from the provider's own page)"
+            out.append(f"- `{prov} · {model}`: ${p['input']}/M input, ${p['output']}/M output tokens{mark}; "
+                       f"source: {p.get('source', 'n/a')}.")
+    return out
 
 
 def _comparison(d: ReportData, title: str, a_cfg: str, b_cfg: str) -> list[str]:
@@ -136,8 +160,9 @@ def _comparison(d: ReportData, title: str, a_cfg: str, b_cfg: str) -> list[str]:
         return out + [f"_Not yet run: needs completed runs of both `{a_cfg}` and `{b_cfg}`._", ""]
     for model in models:
         a, b = a_all[model], b_all[model]
-        out += [f"Model `{model}` · `{a_cfg}`: {len(a)} run(s) (batch `{a[0]['batch_id']}`, commit "
-                f"`{(a[0].get('git_sha') or 'n/a')[:7]}`) · `{b_cfg}`: {len(b)} run(s) (batch `{b[0]['batch_id']}`)",
+        out += [f"Model `{a[0]['provider']} · {model}` · `{a_cfg}`: {len(a)} run(s) (batch `{a[0]['batch_id']}`, commit "
+                f"`{(a[0].get('git_sha') or 'n/a')[:7]}`) · `{b_cfg}`: {len(b)} run(s) (batch `{b[0]['batch_id']}`, "
+                f"commit `{(b[0].get('git_sha') or 'n/a')[:7]}`)",
                 "", f"| Metric | {a_cfg} | {b_cfg} | Abs. diff | Rel. diff |", "|---|---|---|---|---|"]
         for key, label, kind, _ in METRICS:
             va, vb = d.metric_values(a, key), d.metric_values(b, key)
@@ -147,14 +172,49 @@ def _comparison(d: ReportData, title: str, a_cfg: str, b_cfg: str) -> list[str]:
     return out
 
 
+def _models_side_by_side(d: ReportData) -> list[str]:
+    """Same configuration, different models (local vs cloud), latest batch of each."""
+    out: list[str] = []
+    for cfg in ("baseline", "guardrails_off", "faults20_reliability_on", "faults20_reliability_off"):
+        by_model = d.latest_for(cfg)
+        if len(by_model) < 2:
+            continue
+        models = sorted(by_model, key=lambda m: (by_model[m][0]["provider"] != "ollama", m))
+        head = " | ".join(f"{by_model[m][0]['provider']} · {m} ({len(by_model[m])} run(s), "
+                          f"`{(by_model[m][0].get('git_sha') or 'n/a')[:7]}`)" for m in models)
+        two = len(models) == 2
+        out += [f"**{cfg}**", "", f"| Metric | {head} |" + (" Abs. diff (2nd - 1st) |" if two else ""),
+                "|---|" + "---|" * len(models) + ("---|" if two else "")]
+        for key, label, kind, _ in METRICS:
+            vals = [d.metric_values(by_model[m], key) for m in models]
+            row = f"| {label} | " + " | ".join(_agg(v, kind) for v in vals) + " |"
+            if two:
+                row += f" {_diff(_mean(vals[1]), _mean(vals[0]), kind)[0]} |"
+            out.append(row)
+        out.append("")
+    return out
+
+
+def _aborted(d: ReportData) -> list[str]:
+    rows = list(d.db.eval_runs.find({"status": {"$ne": "completed"}}).sort("created_at", 1))
+    if not rows:
+        return []
+    out = ["", "Runs that did not complete (never used in any summary, comparison or claim):", ""]
+    for r in rows:
+        out.append(f"- `{r['_id']}` {r['created_at']:%Y-%m-%d %H:%M} · {r.get('provider')} · {r['model']} · "
+                   f"{r['config_name']} · status `{r['status']}` · {r.get('abort_reason', 'no reason recorded')}")
+    return out
+
+
 def _history(d: ReportData) -> list[str]:
-    lines = ["| Date (UTC) | Run | Commit | Model | Config | Task set | Seed | Faults | Tasks | Completion | "
+    lines = ["| Date (UTC) | Run | Commit | Provider · Model | Config | Task set | Seed | Faults | Tasks | Completion | "
              "Attack success | p50 s | Label |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in d.runs:
         s = d.summaries[r["_id"]]
         sha = (r.get("git_sha") or "n/a")[:7] + ("*" if r.get("git_dirty") else "")
         lines.append(
-            f"| {r['created_at']:%Y-%m-%d %H:%M} | `{r['_id']}` | `{sha}` | {r['model']} | {r['config_name']} | "
+            f"| {r['created_at']:%Y-%m-%d %H:%M} | `{r['_id']}` | `{sha}` | {r['provider']} · {r['model']} | "
+            f"{r['config_name']} | "
             f"{r.get('task_set', 'dev')}/{r['task_set_version']} | {r['seed']} | "
             f"{r['fault_injection']['failure_rate']:.0%} | {s.get('tasks', 0)} | {_fmt(s.get('completion_rate'), 'pct')} | "
             f"{_fmt(s.get('attack_success_rate'), 'pct')} | {_fmt(s.get('latency_p50_ms'), 'sec')} | "
@@ -269,7 +329,14 @@ LIMITATIONS = """\
 - **Guardrails OFF is shadow mode**, not "no infrastructure": schema validation, the read-only SQLite
   connection and authorizer, and honeypot sandboxing stay on. It measures the policy layer, not raw exposure.
 - **Approvals are auto-denied in evals**: real deployments with humans in the loop face approval fatigue.
-- **Local CPU latency** is specific to this machine (Intel Core Ultra 5 225H, no discrete GPU)."""
+- **Local CPU latency** is specific to this machine (Intel Core Ultra 5 225H, no discrete GPU).
+- **Cloud latency includes rate-limit waits.** On a rate-limited cloud tier, time spent honouring HTTP 429
+  `Retry-After` is part of each execution's wall-clock latency; it measures the deployment, not the model.
+- **Cross-commit comparisons.** Comparison headers show the commit of both sides. Runtime changes between
+  commits (e.g. the clearer denial messages added after the first local batch) can shift results, so local
+  and cloud rows from different commits are not a pure model comparison.
+- **Cost estimates** use `agentwarden/pricing.yaml`; entries marked † were not verified against the
+  provider's own pricing page."""
 
 
 def build_report(db: Database) -> str:
@@ -297,12 +364,14 @@ def build_report(db: Database) -> str:
     ]
     for title, a, b in PAIRS:
         lines += _comparison(d, title, a, b)
-    models = {k[2] for k in d.latest if k[0] == "dev" and k[1] == "baseline"}
-    lines += ["### Local vs cloud model", "",
-              "_Not run: requires explicit approval for cloud cost._" if len(models) < 2 else
-              "See the baseline rows per model in §1.", ""]
-    lines += ["## 3. Run history", "", "Append-only: every completed run ever stored. `*` = uncommitted changes.",
-              "", *_history(d), ""]
+    side = _models_side_by_side(d)
+    lines += ["### Local vs cloud model (same configuration, side by side)", "",
+              *(side or ["_Not run yet: needs the same configuration on two models._", ""])]
+    notes = _pricing_notes(d)
+    if notes:
+        lines += ["**Cost basis.** Local Ollama inference is recorded as $0 (electricity not counted).", *notes, ""]
+    lines += ["## 3. Run history", "", "Append-only: every completed run ever stored. `*` = uncommitted code changes.",
+              "", *_history(d), *_aborted(d), ""]
     lines += ["## 4. Failure analysis", "", *_failures(d)]
     lines += ["## 5. Metric definitions", "", DEFINITIONS, ""]
     lines += ["## 6. Limitations", "",

@@ -33,6 +33,7 @@ from agentwarden.gateway.gateway import POLICY_RULE_PREFIXES, Gateway
 from agentwarden.gateway.registry import ToolRegistry
 from agentwarden.gitinfo import git_info
 from agentwarden.ids import new_id
+from agentwarden.pricing import lookup as lookup_price
 from agentwarden.providers import build_provider
 from agentwarden.providers.base import ModelProvider
 from agentwarden.reliability.faults import FaultInjector
@@ -45,9 +46,14 @@ from agentwarden.store.mongo import MongoStore
 RESULTS_DIR = Path("evals/results")
 
 
+class RunAborted(RuntimeError):
+    """An eval run stopped for infrastructure reasons; it is stored as status=aborted, never reported."""
+
+
 def preset(name: str) -> tuple[dict[str, Any], FaultConfig, bool]:
     """Returns (AgentConfig overrides, fault config, unsafe?) for a named configuration."""
-    no_retry = ReliabilityConfig(retries=RetryPolicy(enabled=False), loop_detection=False)
+    # Reliability OFF disables TOOL retries + loop detection only; model retries stay on (see config.py).
+    no_retry = ReliabilityConfig(tool_retries=RetryPolicy(enabled=False), loop_detection=False)
     presets: dict[str, tuple[dict[str, Any], FaultConfig, bool]] = {
         "baseline": ({}, FaultConfig(), False),
         "guardrails_off": ({"guardrails": GuardrailsConfig(enabled=False, spotlighting=False)}, FaultConfig(), True),
@@ -113,11 +119,12 @@ def run_config(*, store: MongoStore, scenario: Scenario, registry: ToolRegistry,
         "_id": run_id, "created_at": datetime.now(UTC), "batch_id": batch_id, "label": label,
         "git_sha": sha, "git_dirty": dirty, "provider": provider.name, "model": provider.model,
         "config_name": config_name, "agent_config": cfg.model_dump(mode="json"),
-        "guardrails": cfg.guardrails.enabled, "reliability": cfg.reliability.retries.enabled,
+        "guardrails": cfg.guardrails.enabled, "reliability": cfg.reliability.tool_retries.enabled,
         "fault_injection": faults_cfg.model_dump(), "scenario": scenario.name, "task_set": task_set,
         "task_set_version": scenario.task_set_version, "task_ids": [t.id for t in tasks],
         "full_task_set": full_task_set,
         "seed": seed, "repeat_index": repeat_index, "data_seed": scenario.data_seed, "db_sha256": db_sha,
+        "pricing": price.model_dump() if (price := lookup_price(provider.name, provider.model)) else None,
         "status": "running",
     }
     store.insert_eval_run(run_doc)
@@ -128,6 +135,12 @@ def run_config(*, store: MongoStore, scenario: Scenario, registry: ToolRegistry,
     print(f"\n== run {run_id} config={config_name} repeat={repeat_index} model={provider.model}", file=sys.stderr)
     for t in tasks:
         res = agent.run(t.prompt, task_id=t.id, eval_run_id=run_id, ephemeral=False)
+        if res.error_kind == "quota_exhausted":
+            # Infrastructure limit, not agent behaviour: abort instead of recording a task failure.
+            store.update_eval_run(run_id, {"status": "aborted", "finished_at": datetime.now(UTC),
+                                           "abort_reason": f"provider quota exhausted at task {t.id}"})
+            raise RunAborted(f"run {run_id} aborted: provider quota exhausted at task {t.id} "
+                             f"({len(results)}/{len(tasks)} tasks done). Re-run when the quota resets.")
         doc = {"run_id": run_id, **score(t, res, store, scenario, db_sha)}
         store.insert_eval_result(dict(doc))
         results.append(doc)
@@ -177,10 +190,18 @@ def cmd_eval(a: argparse.Namespace, settings: Settings) -> int:
         raise SystemExit("refusing to evaluate the scripted test provider")
     registry = build_registry(scenario)
     batch_id = new_id("bat")
+    try:
+        _run_batch(a, configs, store, scenario, registry, provider, tasks, batch_id, is_heldout, n_all)
+    except RunAborted as e:
+        print(f"ABORTED: {e}", file=sys.stderr)
+        return 3
+    return 0
+
+
+def _run_batch(a, configs, store, scenario, registry, provider, tasks, batch_id, is_heldout, n_all) -> None:
     for r in range(a.repeats):
         for c in configs:
             run_config(store=store, scenario=scenario, registry=registry, provider=provider, tasks=tasks,
                        config_name=c, repeat_index=r, seed=a.seed + r, batch_id=batch_id,
                        task_set="heldout" if is_heldout else "dev", label=a.label,
                        full_task_set=len(tasks) == n_all)
-    return 0

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     mongo_db: str = "agentwarden"
 
     ollama_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen3:4b"
+    model: str = "qwen2.5:3b"
     ollama_num_ctx: int = 8192
     # auto: send think=false to known thinking models (qwen3, deepseek-r1, ...), omit for others
     ollama_think: Literal["auto", "on", "off", "omit"] = "auto"
@@ -58,10 +58,16 @@ class RetryPolicy(BaseModel):
     max_attempts: int = Field(3, ge=1)
     base_delay_s: float = 0.2
     max_delay_s: float = 2.0
+    # Longest server-requested wait (Retry-After) we will honour; longer = quota exhausted, fail fast.
+    max_retry_after_s: float = 65.0
 
 
 class ReliabilityConfig(BaseModel):
-    retries: RetryPolicy = RetryPolicy()
+    # Tool retries are what the reliability ON/OFF comparison toggles (faults are injected into tools).
+    tool_retries: RetryPolicy = RetryPolicy()
+    # Model-call retries (provider 429/5xx/timeouts) stay ON in both reliability configs so that provider
+    # rate limits do not confound the tool-reliability comparison.
+    model_retries: RetryPolicy = RetryPolicy(max_attempts=5, base_delay_s=1.0, max_delay_s=20.0)
     loop_detection: bool = True
     loop_repeat_limit: int = Field(3, ge=2, description="Identical successful calls that terminate the run")
 

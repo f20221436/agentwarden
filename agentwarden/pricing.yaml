@@ -1,0 +1,27 @@
+# Price table for ESTIMATED cost (USD per 1M tokens). Local Ollama is always $0.
+# Every entry records where the number came from. `verified: false` means it was NOT read from the
+# provider's own pricing page (groq.com/pricing renders client-side and could not be fetched); costs
+# computed from such entries are labelled as unverified estimates in RESULTS.md.
+# Retrieved 2026-11-10. Update when prices change; old runs keep the price snapshot stored with them.
+
+groq:
+  llama-3.3-70b-versatile:
+    input: 0.59
+    output: 0.79
+    verified: false
+    source: "third-party aggregators (morphllm.com/groq-pricing, Oct 2026; aipricing.guru, Jun 2026)"
+  llama-3.1-8b-instant:
+    input: 0.05
+    output: 0.08
+    verified: false
+    source: "third-party aggregators (morphllm.com/groq-pricing, Oct 2026; aipricing.guru, Jun 2026)"
+  openai/gpt-oss-120b:
+    input: 0.15
+    output: 0.60
+    verified: false
+    source: "third-party aggregators (morphllm.com/groq-pricing, Oct 2026)"
+  openai/gpt-oss-20b:
+    input: 0.075
+    output: 0.30
+    verified: false
+    source: "third-party aggregators (morphllm.com/groq-pricing, Oct 2026)"

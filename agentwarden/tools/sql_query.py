@@ -56,7 +56,8 @@ def make_sql_tool(db_path: Path, *, timeout_s: float = 5.0, schema_notes: str = 
             if msg == "interrupted":
                 raise PermanentToolError(f"query exceeded {timeout_s:.0f}s and was cancelled; simplify it") from e
             if "not authorized" in msg:
-                raise PermanentToolError(f"blocked by read-only database engine: {msg}") from e
+                raise PermanentToolError(f"blocked by read-only database engine ({msg}); the statement did NOT "
+                                         "run and no data was changed. Only SELECT queries are possible") from e
             raise PermanentToolError(f"SQL error: {msg}") from e
         finally:
             con.close()
