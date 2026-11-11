@@ -275,19 +275,33 @@ def _repro(runs: list[dict], *configs: str) -> str:
     return " ".join(parts)
 
 
+def separated(better: list[float | None], worse: list[float | None], higher_is_better: bool = True) -> bool:
+    """True when every run on the 'better' side beats every run on the other side (run ranges do not
+    overlap). A favourable mean with overlapping runs is not claimed: one task flip is 3.3 pp."""
+    b = [v for v in better if v is not None]
+    w = [v for v in worse if v is not None]
+    if not b or not w:
+        return False
+    return min(b) > max(w) if higher_is_better else max(b) < min(w)
+
+
 def _claims(d: ReportData) -> list[str]:
-    """Only claims the stored data supports. Comparative claims need >= 2 runs per side; with fewer, a
-    1-2 task difference on 30 tasks is indistinguishable from noise."""
+    """Only claims the stored data supports. Comparative claims need >= 2 runs per side AND non-overlapping
+    run ranges; otherwise a 1-2 task difference on 30 tasks is indistinguishable from noise."""
     claims: list[str] = []
     skipped: list[str] = []
     base, off = d.latest_for("baseline"), d.latest_for("guardrails_off")
     for model in sorted(set(base) & set(off)):
         b, o = base[model], off[model]
-        asr_b, asr_o = _mean(d.metric_values(b, "attack_success_rate")), _mean(d.metric_values(o, "attack_success_rate"))
+        vb, vo = d.metric_values(b, "attack_success_rate"), d.metric_values(o, "attack_success_rate")
+        asr_b, asr_o = _mean(vb), _mean(vo)
         if asr_b is None or asr_o is None or asr_o <= asr_b:
             continue
         if min(len(b), len(o)) < MIN_RUNS_FOR_COMPARATIVE_CLAIM:
-            skipped.append(f"guardrails ON vs OFF on `{model}` ({len(b)} vs {len(o)} run(s))")
+            skipped.append(f"guardrails ON vs OFF on `{model}` ({len(b)} vs {len(o)} run(s); too few runs)")
+            continue
+        if not separated(vb, vo, higher_is_better=False):
+            skipped.append(f"guardrails ON vs OFF attack success on `{model}` (run ranges overlap)")
             continue
         adv = sum(d.summaries[r["_id"]].get("adversarial", 0) for r in b)
         claims.append(f"Deterministic gateway enforcement reduced attack success on adversarial tasks from "
@@ -303,17 +317,24 @@ def _claims(d: ReportData) -> list[str]:
                           f"Reproduce: `{_repro(b, 'baseline')}`")
     ron, roff = d.latest_for("faults20_reliability_on"), d.latest_for("faults20_reliability_off")
     for model in sorted(set(ron) & set(roff)):
-        c_on = _mean(d.metric_values(ron[model], "completion_rate"))
-        c_off = _mean(d.metric_values(roff[model], "completion_rate"))
-        if c_on is None or c_off is None or c_on <= c_off:
-            continue
-        if min(len(ron[model]), len(roff[model])) < MIN_RUNS_FOR_COMPARATIVE_CLAIM:
-            skipped.append(f"reliability ON vs OFF on `{model}` ({len(ron[model])} vs {len(roff[model])} run(s))")
-            continue
-        claims.append(f"Under 20% injected transient tool failures, retries with exponential backoff raised task "
-                      f"completion from {c_off:.0%} to {c_on:.0%} on `{model}` "
-                      f"(mean of {len(ron[model])} vs {len(roff[model])} runs). "
-                      f"Reproduce: `{_repro(ron[model], 'faults20_reliability_on', 'faults20_reliability_off')}`")
+        n_on, n_off = len(ron[model]), len(roff[model])
+        for key, label in (("tool_execution_success_rate", "tool-execution success"),
+                           ("completion_rate", "task completion")):
+            v_on, v_off = d.metric_values(ron[model], key), d.metric_values(roff[model], key)
+            m_on, m_off = _mean(v_on), _mean(v_off)
+            if m_on is None or m_off is None or m_on <= m_off:
+                continue
+            if min(n_on, n_off) < MIN_RUNS_FOR_COMPARATIVE_CLAIM:
+                skipped.append(f"reliability ON vs OFF {label} on `{model}` ({n_on} vs {n_off} run(s); too few runs)")
+                continue
+            if not separated(v_on, v_off):
+                skipped.append(f"reliability ON vs OFF {label} on `{model}` ({m_off:.1%} -> {m_on:.1%} mean, "
+                               f"but run ranges overlap)")
+                continue
+            claims.append(f"Under 20% injected transient tool failures, retries with exponential backoff and jitter "
+                          f"raised {label} from {m_off:.0%} to {m_on:.0%} on `{model}` "
+                          f"(mean of {n_on} vs {n_off} runs; every ON run above every OFF run). "
+                          f"Reproduce: `{_repro(ron[model], 'faults20_reliability_on', 'faults20_reliability_off')}`")
     full_runs = [r for rs in d.latest.values() for r in rs]
     writes = sum(d.summaries[r["_id"]].get("sql_write_attempts", 0) for r in full_runs)
     db_modified = d.db.eval_results.count_documents(
@@ -332,8 +353,9 @@ def _claims(d: ReportData) -> list[str]:
     out = [f"{i}. {c}" for i, c in enumerate(claims[:5], 1)] or [
         "_No claims yet: the stored data does not support any comparative claim._"]
     if skipped:
-        out += ["", "Not claimed (direction favourable but fewer than "
-                f"{MIN_RUNS_FOR_COMPARATIVE_CLAIM} runs per side): " + "; ".join(skipped) + "."]
+        out += ["", "Not claimed (direction favourable, but fewer than "
+                f"{MIN_RUNS_FOR_COMPARATIVE_CLAIM} runs per side or overlapping run ranges): "
+                + "; ".join(skipped) + "."]
     return out
 
 

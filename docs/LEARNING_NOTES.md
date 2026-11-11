@@ -182,7 +182,7 @@ Configuration hygiene: when comparing "reliability ON vs OFF", only toggle the m
 
 ## Layer 8: What the measurements say (read RESULTS.md for the numbers)
 
-Numbers below are quoted from `docs/RESULTS.md` as generated on 2026-11-10; the file is the source of truth.
+Numbers below are quoted from `docs/RESULTS.md` as generated on 2026-11-11; the file is the source of truth.
 
 1. **Deterministic controls matter most when the model misbehaves.** `qwen2.5:3b` attempted policy-violating
    calls (DELETE, ATTACH, emailing customer data to an external domain); the gateway blocked 8 of 8 with
@@ -198,8 +198,12 @@ Numbers below are quoted from `docs/RESULTS.md` as generated on 2026-11-10; the 
    churned users, 4947 remain". Denials now say explicitly that nothing happened, and evals check for it.
 5. **Measure the infrastructure too.** A laptop sleep (Modern Standby) and a daily token quota both produced
    failures that were not agent behaviour. They are annotated or aborted, never counted silently.
-6. **Small samples.** 30 tasks, 1-2 runs: a one-task flip is 3.3 pp. The reliability ON/OFF difference
-   (2 tasks, 1 run each) is reported but deliberately not claimed.
+6. **Small samples, and pick the metric the mechanism acts on.** 30 tasks, 1-2 runs: a one-task flip is
+   3.3 pp. Under 20% injected tool faults (local, 2 vs 2 runs), retries raised *tool-execution success* from
+   70% to 81% with every ON run above every OFF run: that is claimed. *Task completion* moved 58% → 63% but the
+   runs overlapped (both second runs 60.0%), so it is not claimed. Retries recover tool calls directly; whether
+   that turns into a correct final answer also depends on the 3B model's reasoning, which adds noise. Groq
+   (1 run each): 83.3% vs 80.0% completion, not claimed.
 
 **Interview questions**
 1. *Your guardrails show no effect on gpt-oss-120b. Are they useless?* No: they showed no effect *on these
@@ -210,6 +214,12 @@ Numbers below are quoted from `docs/RESULTS.md` as generated on 2026-11-10; the 
 3. *How do you know a failure was the laptop sleeping and not the model?* The step trace showed a retry
    scheduled with an 8 s wait followed by the next event 252 s later; the Windows System log shows Kernel-Power
    506/507 (enter/exit Modern Standby) exactly spanning that gap.
+4. *You changed the claim rule after seeing the data. Isn't that p-hacking?* The change only makes claims
+   stricter (it removed the completion claim). Changing a rule after the fact to *add* a claim would be.
+   It is recorded as decision D21 with that caveat.
+5. *Why claim tool-execution success rather than completion?* It is the quantity retries act on: an injected
+   transient fault either gets recovered or reaches the model as an error. Completion is downstream and noisier.
+   Both are reported; only the separated one is claimed.
 
 ## Layer 7: Evaluation engine
 

@@ -13,17 +13,17 @@
 | CLI agent on a local model | Done (`agentwarden run`, `qwen2.5:3b`) |
 | All tool calls through the gateway; permissions enforced by code | Done |
 | SQL writes impossible | Done: 3 layers; 0 DB modifications across all runs (RESULTS.md §7) |
-| Reliability under fault injection | Done; local ON/OFF measured with 1 run each (not enough for a claim) |
+| Reliability under fault injection | Done; local 2 vs 2 runs: tool-execution success 70% → 81% (claimed, runs separated); task completion 58% → 63% (not claimed, runs overlap) |
 | Injection documents measured | Done (8 adversarial tasks, local + Groq) |
 | Everything stored in MongoDB | Done |
 | 25+ tasks with one command | Done (30 tasks, task set v3) |
-| RESULTS.md generated with guardrails + reliability comparisons | Done; Groq reliability pair **not yet run** (daily token quota exhausted, run aborted cleanly) |
+| RESULTS.md generated with guardrails + reliability comparisons | Done; Groq reliability pair run 2026-11-11 after quota reset (1 run each: completion 83.3% ON vs 80.0% OFF, not claimed). The earlier quota-aborted attempt is kept as `aborted` |
 | CI | Workflow committed; first run happens on push |
 | README from clean clone | Done |
 | THREAT_MODEL / LEARNING_NOTES current | Done |
 
-Open: Groq `faults20_reliability_on/off` (~176k tokens; needs ~1 day of quota refill), more repeats for the
-reliability comparison, pushing to GitHub.
+Open: pushing to GitHub (needs the repo URL) and the first CI run; more Groq repeats (≥2 per side) if a cloud
+comparative claim is wanted.
 
 ## 1. Environment inspection (2026-11-09)
 
@@ -428,12 +428,13 @@ approval flow, OpenTelemetry, 100+ tasks, model comparison, full-stack compose, 
 | D18 | **Explicit denial messages** ("NOT executed, nothing was changed, never describe it as completed") | Terse "DENIED" | Measured: with the terse message the model claimed "after deleting all churned users, 4947 remain" (adv_06) | Longer tool messages (more tokens) |
 | D19 | **Price table `agentwarden/pricing.yaml` with `source` + `verified` per entry** | Hard-coded prices; no cost | Cost is a required metric; provenance must be visible because the official Groq page could not be fetched | Prices go stale; each run stores the price snapshot it used |
 | D20 | **Keep-awake helper during benchmarks + standby annotation** (`scripts/annotate_standby.py`) | Ignore; re-run affected tasks | The laptop entered Windows Modern Standby mid-run (Kernel-Power 506/507); one local and one Groq execution failed from it. Annotating (not deleting or re-scoring) keeps the record honest | Annotation relies on the Windows event log; Windows-only |
+| D21 | **Comparative claims also need non-overlapping run ranges** (every run on the better side beats every run on the other) | Mean difference with ≥2 runs only (D-rule until 2026-11-11) | With 2 vs 2 local reliability runs the completion means favoured ON (63.3% vs 58.3%) but the second runs tied at 60.0%; a claim from that would not survive questioning. **Introduced after seeing that data**, which is acceptable only because it can remove claims, never add them | Fewer claims; with few runs, range separation is a crude test, not a significance test |
 | D14 | **Benchmark model: `qwen2.5:3b`** (Ollama, CPU) | `qwen3:4b`; larger 7B models; cloud | Measured with `agentwarden probe` (10 prompts, first turn): qwen2.5:3b 9/10 correct tool + valid args, mean 3.9 s/call; qwen3:4b 9/10 but mean 61.8 s/call (370–910 output tokens per call even with `think=false`) and one 300 s timeout. qwen3:4b would make one 30-task run take > 1 h | A 3B model is weak at multi-step SQL; absolute completion rates are low, but the *runtime* comparisons (guardrails, reliability) are what M1 measures. Cloud comparison remains available with approval |
 
 ---
 
 ## 11. Test status
-From real runs only. 2026-11-10 (after the Groq batch): **146 passed, 0 failed** (`pytest -q`, includes Mongo
-integration tests against the local container); line coverage **82%** (`pytest --cov=agentwarden`).
+From real runs only. 2026-11-11 (after the reliability batches): **147 passed, 0 failed** (`pytest -q`, includes
+Mongo integration tests against the local container); line coverage **81%** (`pytest --cov=agentwarden`).
 Cloud 429/Retry-After handling is tested with a mocked HTTP transport (no network, no key). Mostly uncovered:
 Ollama HTTP path, `probe.py`, CLI glue (exercised by live runs). Lint: `ruff check` clean.

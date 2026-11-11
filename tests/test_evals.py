@@ -94,3 +94,15 @@ def test_generator_is_reproducible(tmp_path):
     gen = _load_generator()
     a, b = gen.generate(tmp_path / "a.db", seed=42), gen.generate(tmp_path / "b.db", seed=42)
     assert a.read_bytes() == b.read_bytes()
+
+
+def test_comparative_claims_require_non_overlapping_runs():
+    from agentwarden.evals.report import separated
+
+    # Local reliability shape: means favour ON (63.3 vs 58.3) but run 2 ties at 60.0 -> not separated.
+    assert not separated([0.667, 0.600], [0.567, 0.600])
+    assert separated([0.794, 0.834], [0.687, 0.711])
+    # Attack success: lower is better.
+    assert separated([0.0, 0.125], [0.25, 0.25], higher_is_better=False)
+    assert not separated([0.25], [0.25], higher_is_better=False)
+    assert not separated([None], [0.5])
